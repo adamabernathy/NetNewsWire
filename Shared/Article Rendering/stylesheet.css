@@ -567,3 +567,48 @@ a.footnote:hover,
 	}
 
 }
+
+/* YouTube badges */
+
+.nnw-yt-badge {
+	display: inline-block;
+	font-family: -apple-system, sans-serif;
+	font-size: 12px;
+	font-weight: 600;
+	padding: 4px 10px;
+	border-radius: 6px;
+	margin-top: 8px;
+	margin-right: 6px;
+	letter-spacing: 0.02em;
+}
+
+.nnw-yt-badge-short {
+	background: #f00;
+	color: #fff;
+}
+
+.nnw-yt-badge-video {
+	background: #086AEE;
+	color: #fff;
+}
+
+@media(prefers-color-scheme: dark) {
+	.nnw-yt-badge-video {
+		background: #2D80F1;
+		color: #fff;
+	}
+}
+
+.nnw-yt-meta {
+	display: flex;
+	gap: 16px;
+	margin-top: 8px;
+	font-size: 13px;
+	color: #606060;
+}
+
+@media(prefers-color-scheme: dark) {
+	.nnw-yt-meta {
+		color: #aaa;
+	}
+}

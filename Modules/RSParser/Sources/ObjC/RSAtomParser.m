@@ -29,6 +29,14 @@
 @property (nonatomic) BOOL parsingSource;
 @property (nonatomic) BOOL parsingArticle;
 @property (nonatomic) BOOL parsingAuthor;
+@property (nonatomic) BOOL ytParsingMediaGroup;
+@property (nonatomic) BOOL ytParsingMediaCommunity;
+@property (nonatomic) BOOL ytIsFeed;
+@property (nonatomic) NSString *ytMediaDescription;
+@property (nonatomic) NSString *ytVideoID;
+@property (nonatomic) NSString *ytThumbnailURL;
+@property (nonatomic) NSString *ytViewCount;
+@property (nonatomic) NSString *ytLikeCount;
 @property (nonatomic) NSMutableArray *attributesStack;
 @property (nonatomic, readonly) NSDictionary *currentAttributes;
 @property (nonatomic) NSMutableString *xhtmlString;
@@ -74,6 +82,7 @@
 	_attributesStack = [NSMutableArray new];
 	_articles = [NSMutableArray new];
 	_isDaringFireball =  [_urlString containsString:@"daringfireball.net/"];
+	_ytIsFeed = [_urlString containsString:@"youtube.com/"];
 
 	return self;
 }
@@ -210,6 +219,33 @@ static const NSInteger kEnclosureLength = 10;
 static const char *kLength = "length";
 static const NSInteger kLengthLength = 7;
 
+static const char *kYTMediaGroup = "group";
+static const NSInteger kYTMediaGroupLength = 6;
+
+static const char *kYTMediaDescription = "description";
+static const NSInteger kYTMediaDescriptionLength = 12;
+
+static const char *kYTMediaThumbnail = "thumbnail";
+static const NSInteger kYTMediaThumbnailLength = 10;
+
+static const char *kYTVideoId = "videoId";
+static const NSInteger kYTVideoIdLength = 8;
+
+static const char *kYTMediaCommunity = "community";
+static const NSInteger kYTMediaCommunityLength = 10;
+
+static const char *kYTMediaStatistics = "statistics";
+static const NSInteger kYTMediaStatisticsLength = 11;
+
+static const char *kYTMediaStarRating = "starRating";
+static const NSInteger kYTMediaStarRatingLength = 11;
+
+static NSString *kYTMediaPrefix = @"media";
+static NSString *kYTNamespacePrefix = @"yt";
+static NSString *kYTURLKey = @"url";
+static NSString *kYTViewsKey = @"views";
+static NSString *kYTCountKey = @"count";
+
 #pragma mark - Parsing
 
 - (void)parse {
@@ -237,7 +273,67 @@ static const NSInteger kLengthLength = 7;
 	RSParsedArticle *article = [[RSParsedArticle alloc] initWithFeedURL:self.urlString];
 	article.dateParsed = self.dateParsed;
 
+	self.ytMediaDescription = nil;
+	self.ytVideoID = nil;
+	self.ytThumbnailURL = nil;
+	self.ytViewCount = nil;
+	self.ytLikeCount = nil;
+	self.ytParsingMediaGroup = NO;
+	self.ytParsingMediaCommunity = NO;
+
 	[self.articles addObject:article];
+}
+
+/// Called when a YouTube feed entry ends. Assembles YouTube-specific metadata
+/// (video ID, Short/Video type, view count, like count, description) into
+/// a hidden HTML div with data-* attributes. YouTubeArticleRenderer reads
+/// these attributes at render time to build the display HTML.
+- (void)finalizeYouTubeArticle {
+
+	RSParsedArticle *article = self.currentArticle;
+	if (!article) {
+		return;
+	}
+
+	if (self.ytThumbnailURL) {
+		article.imageURL = self.ytThumbnailURL;
+	}
+
+	if (self.ytVideoID && !article.body) {
+		NSMutableString *html = [NSMutableString string];
+
+		// YouTube Shorts use /shorts/ in the permalink URL
+		BOOL isShort = [article.permalink containsString:@"/shorts/"];
+		NSString *viewCount = self.ytViewCount;
+		NSString *likeCount = self.ytLikeCount;
+
+		// Store metadata as data-* attributes in a hidden div.
+		// The renderer extracts these at display time rather than
+		// embedding presentation HTML in the database.
+		[html appendString:@"<div class=\"nnw-youtube-meta\" style=\"display:none;\""];
+		[html appendFormat:@" data-video-id=\"%@\"", self.ytVideoID];
+		if (isShort) {
+			[html appendString:@" data-is-short=\"true\""];
+		}
+		if (viewCount) {
+			[html appendFormat:@" data-views=\"%@\"", viewCount];
+		}
+		if (likeCount) {
+			[html appendFormat:@" data-likes=\"%@\"", likeCount];
+		}
+		[html appendString:@"></div>"];
+
+		// Append the video description from <media:description>
+		if (self.ytMediaDescription.length > 0) {
+			NSString *escapedDescription = [self.ytMediaDescription stringByReplacingOccurrencesOfString:@"&" withString:@"&amp;"];
+			escapedDescription = [escapedDescription stringByReplacingOccurrencesOfString:@"<" withString:@"&lt;"];
+			escapedDescription = [escapedDescription stringByReplacingOccurrencesOfString:@">" withString:@"&gt;"];
+			escapedDescription = [escapedDescription stringByReplacingOccurrencesOfString:@"\n" withString:@"<br>"];
+			[html appendFormat:@"<p class=\"nnw-youtube-description\">%@</p>", escapedDescription];
+		}
+
+		article.body = [html copy];
+	}
 }
 
 
@@ -535,6 +631,57 @@ static NSString *httpURLPrefix = @"http://";
 		return;
 	}
 
+	// YouTube feeds use media: and yt: namespaced elements for video metadata.
+	// The standard Atom parser ignores prefixed elements (see addArticleElement:prefix:),
+	// so we handle them here for YouTube feeds only.
+	if (self.parsingArticle && self.ytIsFeed && prefix) {
+
+		NSString *prefixString = [NSString stringWithUTF8String:(const char *)prefix];
+
+		// media: namespace — contains thumbnail, description, view count, like count
+		if ([prefixString isEqualToString:kYTMediaPrefix]) {
+
+			if (RSSAXEqualTags(localName, kYTMediaGroup, kYTMediaGroupLength)) {
+				self.ytParsingMediaGroup = YES;
+				return;
+			}
+
+			if (self.ytParsingMediaGroup && RSSAXEqualTags(localName, kYTMediaThumbnail, kYTMediaThumbnailLength)) {
+				self.ytThumbnailURL = xmlAttributes[kYTURLKey];
+				return;
+			}
+
+			if (self.ytParsingMediaGroup && RSSAXEqualTags(localName, kYTMediaDescription, kYTMediaDescriptionLength)) {
+				[self.parser beginStoringCharacters];
+				return;
+			}
+
+			if (self.ytParsingMediaGroup && RSSAXEqualTags(localName, kYTMediaCommunity, kYTMediaCommunityLength)) {
+				self.ytParsingMediaCommunity = YES;
+				return;
+			}
+
+			if (self.ytParsingMediaCommunity && RSSAXEqualTags(localName, kYTMediaStatistics, kYTMediaStatisticsLength)) {
+				self.ytViewCount = xmlAttributes[kYTViewsKey];
+				return;
+			}
+
+			if (self.ytParsingMediaCommunity && RSSAXEqualTags(localName, kYTMediaStarRating, kYTMediaStarRatingLength)) {
+				self.ytLikeCount = xmlAttributes[kYTCountKey];
+				return;
+			}
+		}
+
+		// yt: namespace — contains the video ID
+		if ([prefixString isEqualToString:kYTNamespacePrefix]) {
+
+			if (RSSAXEqualTags(localName, kYTVideoId, kYTVideoIdLength)) {
+				[self.parser beginStoringCharacters];
+				return;
+			}
+		}
+	}
+
 	if (RSSAXEqualTags(localName, kAuthor, kAuthorLength)) {
 		self.parsingAuthor = YES;
 		self.currentAuthor = [[RSParsedAuthor alloc] init];
@@ -642,7 +789,33 @@ static NSString *httpURLPrefix = @"http://";
 	}
 
 	else if (RSSAXEqualTags(localName, kEntry, kEntryLength)) {
+		if (self.ytIsFeed) {
+			[self finalizeYouTubeArticle];
+		}
 		self.parsingArticle = NO;
+	}
+
+	else if (self.parsingArticle && self.ytIsFeed && prefix) {
+
+		NSString *prefixString = [NSString stringWithUTF8String:(const char *)prefix];
+
+		if ([prefixString isEqualToString:kYTMediaPrefix]) {
+			if (RSSAXEqualTags(localName, kYTMediaGroup, kYTMediaGroupLength)) {
+				self.ytParsingMediaGroup = NO;
+				self.ytParsingMediaCommunity = NO;
+			}
+			else if (RSSAXEqualTags(localName, kYTMediaCommunity, kYTMediaCommunityLength)) {
+				self.ytParsingMediaCommunity = NO;
+			}
+			else if (self.ytParsingMediaGroup && RSSAXEqualTags(localName, kYTMediaDescription, kYTMediaDescriptionLength)) {
+				self.ytMediaDescription = [self currentString];
+			}
+		}
+		else if ([prefixString isEqualToString:kYTNamespacePrefix]) {
+			if (RSSAXEqualTags(localName, kYTVideoId, kYTVideoIdLength)) {
+				self.ytVideoID = [self currentString];
+			}
+		}
 	}
 
 	else if (self.parsingArticle && !self.parsingSource) {

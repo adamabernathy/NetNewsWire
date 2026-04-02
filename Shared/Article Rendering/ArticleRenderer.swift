@@ -113,6 +113,11 @@ import Account
 		if let content = extractedArticle?.content {
 			self.body = content
 			self.baseURL = extractedArticle?.url
+		} else if let article, let youtubeBody = YouTubeArticleRenderer.renderedBody(for: article) {
+			// YouTube feeds store metadata rather than display HTML in the article body.
+			// Generate the presentation HTML at render time.
+			self.body = youtubeBody
+			self.baseURL = article.baseURL?.absoluteString
 		} else {
 			self.body = article?.body ?? ""
 			self.baseURL = article?.baseURL?.absoluteString
